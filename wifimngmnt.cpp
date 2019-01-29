@@ -7,7 +7,6 @@
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
-#include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <Arduino.h>
 #include <ArduinoOTA.h>
