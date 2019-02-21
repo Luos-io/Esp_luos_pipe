@@ -154,7 +154,9 @@ void loopmanager(void) {
     webSocket.loop();
     ArduinoOTA.handle();
     pageloop();
-    dnsServer.processNextRequest();
+    if (appoint & (con_mode == NOCON)) {
+      dnsServer.processNextRequest();
+    }
     luosloop();
     bleloop();
 }
