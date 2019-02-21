@@ -8,7 +8,6 @@
 #include <ESPmDNS.h>
 #include <WebSocketsServer.h>
 #include <EEPROM.h>
-#include <Arduino.h>
 #include <ArduinoOTA.h>
 #include <BluetoothSerial.h>
 #include <HardwareSerial.h>
@@ -27,6 +26,9 @@ con_mode_t con_mode = NOCON;
 // Bluetooth
 BluetoothSerial SerialBT;
 
+// led things
+bool appoint = true;
+
 void (*cb)(uint8_t, uint8_t*, size_t);
 
 // Bluetooth event callback
@@ -34,7 +36,17 @@ void bleEvent(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
     if(event == ESP_SPP_SRV_OPEN_EVT){
         Serial.println("Bluetooth client Connected");
         con_mode = BLESERIAL;
+        digitalWrite (GREENLED, HIGH);
     }
+    if(event == ESP_SPP_CLOSE_EVT){
+        Serial.println("Bluetooth client Disconnected");
+        con_mode = NOCON;
+        digitalWrite (GREENLED, LOW);
+    }
+}
+
+bool getappoint(void) {
+  return appoint;
 }
 
 // Websocket event callback
@@ -43,14 +55,16 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
         case WStype_DISCONNECTED:
             Serial.printf("Websocket disconnected!\n");
             con_mode = NOCON;
-            // TODO turn off green led
+            // Turn off green led
+            digitalWrite (GREENLED, LOW);
         break;
         case WStype_CONNECTED:
             {
                 IPAddress ip = webSocket.remoteIP(num);
                 Serial.printf("Websocket connected from %d.%d.%d.%d url: %s\n", ip[0], ip[1], ip[2], ip[3], payload);
                 con_mode = WIFIWS;
-                // TODO turn on green LED
+                // Turn on green LED
+                digitalWrite (GREENLED, HIGH);
             }
         break;
         case WStype_TEXT:
@@ -150,6 +164,8 @@ void wifi_connect() {
     Serial.println("");
     Serial.println("Connecting Wifi...");
     if(wifiMulti.run() == WL_CONNECTED) {
+        // Stop led blink 
+        appoint = false;
         // Stop captive portal
         dnsServer.stop();
         // Print connection details
