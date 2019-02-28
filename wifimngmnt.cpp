@@ -70,9 +70,8 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
         case WStype_TEXT:
             {
               uint8_t datas[lenght +1];
-              memcpy(datas, payload, lenght);
               // add a '\r' at the end of the string because L0 need it to detect the end of the Json
-              datas[lenght] = '\r';
+              sprintf((char*)datas, "%s\r",payload);
               // Send those datas to L0
               Serial2.write(datas, lenght+1);
             }
