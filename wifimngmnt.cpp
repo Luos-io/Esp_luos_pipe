@@ -111,26 +111,22 @@ String printWifiScan(void) {
 
 // manage messages received from L0 and send them to the current output
 void luosloop() {
-    char jsonString[512] = {0};
-    int i = 0;
+    static char jsonString[4096] = {0};
+    int i = strlen(jsonString);
     while(Serial2.available()) {
-        jsonString[i++] = char(Serial2.read());
-    }
-    if (jsonString[0] != 0) {
-        // search the first '\n' of the message
-        for (i = 0; i < strlen(jsonString); i++) {
-            if(jsonString[i] == '\n') break;
-        }
-        // check errors
-        if (i == strlen(jsonString)) return;
-        // Finish the String just to make sure
-        jsonString[i+1] = '\0';
-        // transfert Json to the current wireless communication way
-        if (con_mode == WIFIWS) {
-            webSocket.sendTXT(0, jsonString);
-        }
-        if (con_mode == BLESERIAL) {
-            SerialBT.write((const uint8_t*)jsonString, strlen(jsonString));
+        jsonString[i] = char(Serial2.read());
+        if(jsonString[i++] == '\n') {
+          // there is a complete message
+          // transfert Json to the current wireless communication way
+            //Serial.println(jsonString);
+          if (con_mode == WIFIWS) {
+              webSocket.sendTXT(0, jsonString);
+          }
+          if (con_mode == BLESERIAL) {
+              SerialBT.write((const uint8_t*)jsonString, strlen(jsonString));
+          }
+          memset(jsonString, 0, 1024);
+          i=0;
         }
     }
 }
@@ -152,9 +148,11 @@ void bleloop(void) {
 void loopmanager(void) {
     webSocket.loop();
     ArduinoOTA.handle();
-    pageloop();
-    if (appoint & (con_mode == NOCON)) {
-      dnsServer.processNextRequest();
+    if (con_mode == NOCON) {
+      pageloop();
+      if (appoint) {
+        dnsServer.processNextRequest();
+      }
     }
     luosloop();
     bleloop();
@@ -194,6 +192,7 @@ void wifi_connect() {
 void comconfigure() {
     // Setup serial to L0
     Serial2.begin(1000000, SERIAL_8N1, 16, 17);    //Baud rate, parity mode, RX, TX
+    Serial2.setRxBufferSize(4096);
     // Start EEPROM
     EEPROM.begin(512);
     // Retrive SSID and password
