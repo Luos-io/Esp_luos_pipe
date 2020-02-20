@@ -6,15 +6,14 @@
 #include <WiFiMulti.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
-#include <WebSocketsServer.h>
+#include <AsyncTCP.h>
 #include <EEPROM.h>
 #include <ArduinoOTA.h>
-#include <BluetoothSerial.h>
-#include <HardwareSerial.h>
 
 // Wifi parameters
 WiFiMulti wifiMulti;
-WebSocketsServer webSocket = WebSocketsServer(WSPORT);
+AsyncClient* moClient;
+AsyncServer* moServer;
 char hostString[HOSTNAMESIZE] = {0};
 
 // DNS server parameters
@@ -23,65 +22,58 @@ const byte DNS_PORT = 53;
 DNSServer dnsServer;
 con_mode_t con_mode = NOCON;
 
-// Bluetooth
-BluetoothSerial SerialBT;
+// Serial connection
+#define SERIAL_LUOS     Serial_Luos
+HardwareSerial SERIAL_LUOS(1);
 
 // led things
 bool appoint = true;
 
 void (*cb)(uint8_t, uint8_t*, size_t);
 
-// Bluetooth event callback
-void bleEvent(esp_spp_cb_event_t event, esp_spp_cb_param_t *param){
-    if(event == ESP_SPP_SRV_OPEN_EVT){
-        Serial.println("Bluetooth client Connected");
-        con_mode = BLESERIAL;
-        digitalWrite (GREENLED, HIGH);
-    }
-    if(event == ESP_SPP_CLOSE_EVT){
-        Serial.println("Bluetooth client Disconnected");
-        con_mode = NOCON;
-        digitalWrite (GREENLED, LOW);
-    }
-}
-
 bool getappoint(void) {
   return appoint;
 }
 
-// Websocket event callback
-void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght) {
-    switch(type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("Websocket disconnected!\n");
-            con_mode = NOCON;
-            // Turn off green led
-            digitalWrite (GREENLED, LOW);
-        break;
-        case WStype_CONNECTED:
-            {
-                IPAddress ip = webSocket.remoteIP(num);
-                Serial.printf("Websocket connected from %d.%d.%d.%d url: %s\n", ip[0], ip[1], ip[2], ip[3], payload);
-                con_mode = WIFIWS;
-                // Turn on green LED
-                digitalWrite (GREENLED, HIGH);
-            }
-        break;
-        case WStype_TEXT:
-            {
-              uint8_t datas[lenght +1];
-              // add a '\r' at the end of the string because L0 need it to detect the end of the Json
-              sprintf((char*)datas, "%s\r",payload);
-              // Send those datas to L0
-              Serial2.write(datas, lenght+1);
-            }
-            break;
-        case WStype_BIN:
-            Serial.printf("[%u] get binary lenght: %u\n", num, lenght);
-        break;
-        default:
-        break;
-    }
+/* Clients events */
+static void handleError(void* arg, AsyncClient* poClient, int8_t error) {
+  Serial.printf("TCP Client : handleError\n");
+}
+
+// TCP to Serial
+static void handleData(void* arg, AsyncClient* poClient, void *data, size_t len) {
+    Serial.write((uint8_t*)data, len);
+	SERIAL_LUOS.write((uint8_t*)data, len);
+}
+
+static void handleDisconnect(void* arg, AsyncClient* poClient) {
+  Serial.printf("TCP Client : handleDisconnect\n");
+  con_mode = NOCON;
+  // Turn off green led
+  digitalWrite (GREENLED, LOW);
+}
+
+static void handleTimeOut(void* arg, AsyncClient* poClient, uint32_t time) {
+  Serial.printf("TCP Client : handleTimeOut\n");
+}
+
+/* Server events */
+static void handleNewClient(void* arg, AsyncClient* poClient) {
+    // Add to list
+    moClient = poClient;
+
+    poClient->setNoDelay(true);
+
+    // Register events
+    poClient->onData(&handleData, NULL);
+    poClient->onError(&handleError, NULL);
+    poClient->onDisconnect(&handleDisconnect, NULL);
+    poClient->onTimeout(&handleTimeOut, NULL);
+
+    Serial.printf("TCP Server : New client!\n");
+    con_mode = WIFIWS;
+    // Turn on green LED
+    digitalWrite (GREENLED, HIGH);
 }
 
 // Only for debug purpose, print wifi list into debug serial
@@ -111,51 +103,56 @@ String printWifiScan(void) {
 
 // manage messages received from L0 and send them to the current output
 void luosloop() {
-    static char jsonString[4096] = {0};
-    int i = strlen(jsonString);
-    while(Serial2.available()) {
-        jsonString[i] = char(Serial2.read());
-        if(jsonString[i++] == '\n') {
-          // there is a complete message
-          // transfert Json to the current wireless communication way
-            //Serial.println(jsonString);
-          if (con_mode == WIFIWS) {
-              webSocket.sendTXT(0, jsonString);
-          }
-          if (con_mode == BLESERIAL) {
-              SerialBT.write((const uint8_t*)jsonString, strlen(jsonString));
-          }
-          memset(jsonString, 0, 1024);
-          i=0;
+    static char jsonString[BUFFERSIZE] = {0};
+    static int i = 0;
+    int msg_end = 0;
+    while(SERIAL_LUOS.available()) {
+        jsonString[i] = char(SERIAL_LUOS.read());
+        if (jsonString[i] == '\n') {
+          msg_end = i;
+          i++;
+          if (i > BUFFERSIZE) Serial.println("serial buffer overflow ! ");
+          break;
         }
+        i++;
+        if (i > BUFFERSIZE) Serial.println("serial buffer overflow ! ");
     }
-}
+    if ((msg_end != 0)) {
+        if (con_mode == WIFIWS) {
 
-// manage messages received from bluetooth
-void bleloop(void) {
-    static char jsonString[256] = {0};
-    while (SerialBT.available()) {
-        const char letter = char(SerialBT.read());
-        sprintf(jsonString, "%s%c", jsonString, letter);
-        if (letter == '\r') {
-            Serial2.print(jsonString);
-            jsonString[0] = '\0';
+            static unsigned long in_life = millis();
+            static int count = 0;
+            static int failure = 0;
+            // Finish the String just to make sure */
+            jsonString[i] = '\0';
+            // transfert Json to the current wireless communication way
+            moClient->add((char*)jsonString, strlen(jsonString));
+            while(!moClient->canSend());
+            failure += !moClient->send();
+            if (millis() - in_life > 10000) {
+                Serial.printf("Still living no %f => state %d => failure %d : %s", count/6.0, moClient->state(),failure,  jsonString);
+                count++;
+                in_life = millis();
+            }
         }
+        // clean data
+        i = 0;
+        jsonString[i] = '\0';
     }
 }
 
 // The function who call all loops who need to be updated
 void loopmanager(void) {
-    webSocket.loop();
-    ArduinoOTA.handle();
-    if (con_mode == NOCON) {
-      pageloop();
-      if (appoint) {
-        dnsServer.processNextRequest();
-      }
+    static unsigned long last_low_freq = millis();
+    if ((con_mode != WIFIWS) & (millis() - last_low_freq > 50)){
+        ArduinoOTA.handle();
+        pageloop();
+        if(wifiMulti.run() != WL_CONNECTED) {
+            dnsServer.processNextRequest();
+        }
+        last_low_freq = millis();
     }
     luosloop();
-    bleloop();
 }
 
 //Connect to the EEPROM saved wifi, else create access point
@@ -191,8 +188,8 @@ void wifi_connect() {
 // Setup the entire communication ways
 void comconfigure() {
     // Setup serial to L0
-    Serial2.begin(1000000, SERIAL_8N1, 16, 17);    //Baud rate, parity mode, RX, TX
-    Serial2.setRxBufferSize(4096);
+    SERIAL_LUOS.begin(1000000, SERIAL_8N1, 16, 17);    //Baud rate, parity mode, RX, TX
+    SERIAL_LUOS.setRxBufferSize(BUFFERSIZE);
     // Start EEPROM
     EEPROM.begin(512);
     // Retrive SSID and password
@@ -229,16 +226,13 @@ void comconfigure() {
     if(MDNS.begin(hostString)) {
         Serial.println("MDNS responder started");
     }
-    // Open webSocket server
-    webSocket.begin();
-    webSocket.onEvent(webSocketEvent);
 
     // Setup web server
     pageinit();
 
     // Start OTA server.
     ArduinoOTA.onStart([]() {
-        Serial.println("Start");
+        Serial.println("Start OTA update\n");
     });
     ArduinoOTA.onEnd([]() {
         Serial.println("\nEnd");
@@ -260,11 +254,10 @@ void comconfigure() {
     //Add services to MDNS allowing this module to be easily detected in the network
     MDNS.addService("luos", "tcp", LUOSDETECT);
     MDNS.addService("http", "tcp", SERVERPORT);
-    MDNS.addService("ws", "tcp", WSPORT);
+    MDNS.addService("stream", "tcp", TCP_PORT);
 
-    //Bluetooth configurration
-    SerialBT.register_callback(bleEvent);
-    SerialBT.begin(hostString); //Bluetooth device name
-    Serial.print("Bluetooth started as ");
-    Serial.println(hostString);
+    // Start listening on TCP port
+	moServer = new AsyncServer(TCP_PORT);
+	moServer->onClient(&handleNewClient, moServer);
+	moServer->begin();
 }

@@ -8,7 +8,6 @@
 
 typedef enum {
     NOCON,
-    BLESERIAL,
     WIFIWS
 } con_mode_t;
 
