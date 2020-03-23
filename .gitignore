@@ -1,0 +1,11 @@
+# mac
+.DS_Store
+**/.DS_Store
+Icon
+**/Icon
+.pio
+.pio/**
+.vscode/**
+.travis.yml
+
+
